@@ -1,0 +1,8 @@
+{
+  "name": "Craftsquarre Shoot Playbook & Video Director Deck",
+  "description": "On-set production playbook for Craftsquarre Merchant App shoot. In-page video reference player, shooting directions, shot list tracker, scripts, and call sheet checklist.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
