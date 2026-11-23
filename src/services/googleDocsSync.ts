@@ -1,4 +1,5 @@
 import { VideoReference, VIDEO_REFERENCES } from '../data/shootData';
+import firebaseConfig from '../../firebase-applet-config.json';
 
 export interface ResourceInfo {
   id: string;
@@ -129,17 +130,20 @@ export function unwrapRedirectUrl(rawUrl: string): string {
  */
 export async function fetchGoogleDoc(
   urlOrId: string,
-  accessToken?: string | null
+  accessToken?: string | null,
+  options?: { allowSingleTabFallback?: boolean }
 ): Promise<FetchDocResponse> {
   const resource = extractResourceInfo(urlOrId);
   if (!resource) {
     throw new Error('Invalid link. Please paste a Google Docs or Google Sheets URL.');
   }
 
+  const allowSingleTabFallback = options?.allowSingleTabFallback ?? true;
+
   if (resource.type === 'spreadsheet') {
-    return fetchGoogleSpreadsheet(resource, accessToken);
+    return fetchGoogleSpreadsheet(resource, accessToken, allowSingleTabFallback);
   }
-  return fetchGoogleDocument(resource.id, accessToken);
+  return fetchGoogleDocument(resource.id, accessToken, allowSingleTabFallback);
 }
 
 /**
@@ -168,7 +172,8 @@ function deduplicateLocalUrls(urls: string[]): string[] {
  */
 async function fetchGoogleDocument(
   docId: string,
-  accessToken?: string | null
+  accessToken?: string | null,
+  allowSingleTabFallback = true
 ): Promise<FetchDocResponse> {
   let apiAuthFailed = false;
   let apiErrorMessage = '';
@@ -223,23 +228,25 @@ async function fetchGoogleDocument(
   }
 
   // Fallback: public text export (NOTE: Google public export only reads Tab 1)
-  try {
-    const exportUrl = `https://docs.google.com/document/d/${docId}/export?format=txt`;
-    const exportRes = await fetch(exportUrl, { cache: 'no-store' });
-    if (exportRes.ok) {
-      const text = await exportRes.text();
-      return {
-        title: 'Craftsquarre Shoot Working Document',
-        text: `=== TAB: Main Document ===\n${text}`,
-        links: extractUrlsFromText(text),
-        type: 'document',
-        tabCount: 1,
-        tabNames: ['Main Document (Tab 1 only)'],
-        usedPublicFallback: true,
-      };
+  if (allowSingleTabFallback) {
+    try {
+      const exportUrl = `https://docs.google.com/document/d/${docId}/export?format=txt`;
+      const exportRes = await fetch(exportUrl, { cache: 'no-store' });
+      if (exportRes.ok) {
+        const text = await exportRes.text();
+        return {
+          title: 'Craftsquarre Shoot Working Document',
+          text: `=== TAB: Main Document ===\n${text}`,
+          links: extractUrlsFromText(text),
+          type: 'document',
+          tabCount: 1,
+          tabNames: ['Main Document (Tab 1 only)'],
+          usedPublicFallback: true,
+        };
+      }
+    } catch (err) {
+      console.warn('Docs public export fallback failed:', err);
     }
-  } catch (err) {
-    console.warn('Docs public export fallback failed:', err);
   }
 
   if (!accessToken) {
@@ -255,16 +262,97 @@ async function fetchGoogleDocument(
 }
 
 /**
+ * Parses a Google Sheets API v4 spreadsheet response (all sheet tabs, cell hyperlinks, rich text links, formulas).
+ */
+function parseGoogleSheetsResponse(data: any): FetchDocResponse {
+  const title = data.properties?.title || 'Craftsquarre Shoot Sheet';
+  const textParts: string[] = [];
+  const links: string[] = [];
+  const tabNames: string[] = [];
+  const sheets = data.sheets || [];
+
+  for (const sheet of sheets) {
+    const tabTitle = sheet.properties?.title || `Sheet ${tabNames.length + 1}`;
+    tabNames.push(tabTitle);
+    textParts.push(`\n=== TAB: ${tabTitle} ===`);
+
+    for (const grid of sheet.data || []) {
+      for (const row of grid.rowData || []) {
+        const rowLabels: string[] = [];
+        const rowUrls: string[] = [];
+
+        for (const cell of row.values || []) {
+          const val = (cell.formattedValue || '').trim();
+          const hyperlink = (cell.hyperlink || '').trim();
+          const formula = (cell.userEnteredValue?.formulaValue || '').trim();
+
+          const cellUrls: string[] = [];
+          if (hyperlink) cellUrls.push(hyperlink);
+
+          if (Array.isArray(cell.textFormatRuns)) {
+            for (const run of cell.textFormatRuns) {
+              const uri = run?.format?.link?.uri;
+              if (uri) cellUrls.push(uri.trim());
+            }
+          }
+
+          if (formula) {
+            cellUrls.push(...extractUrlsFromText(formula));
+          }
+
+          if (val) {
+            cellUrls.push(...extractUrlsFromText(val));
+          }
+
+          const uniqueCellUrls = deduplicateLocalUrls(cellUrls);
+          rowUrls.push(...uniqueCellUrls);
+
+          const cleanLabel = stripUrlsFromText(val);
+          if (cleanLabel) {
+            rowLabels.push(cleanLabel);
+          }
+        }
+
+        const uniqueRowUrls = deduplicateLocalUrls(rowUrls);
+        links.push(...uniqueRowUrls);
+
+        const parts: string[] = [];
+        if (rowLabels.length > 0) parts.push(rowLabels.join(' | '));
+        if (uniqueRowUrls.length > 0) parts.push(uniqueRowUrls.join(' '));
+
+        if (parts.length > 0) {
+          textParts.push(parts.join(' | '));
+        }
+      }
+    }
+  }
+
+  const fullText = textParts.join('\n');
+  return {
+    title,
+    text: fullText,
+    links: Array.from(new Set(links)),
+    type: 'spreadsheet',
+    tabCount: tabNames.length || 1,
+    tabNames,
+    usedPublicFallback: false,
+  };
+}
+
+/**
  * Fetches Google Spreadsheet via Sheets API v4 (all sheet tabs, values, cell hyperlinks, rich text links, HYPERLINK formulas).
+ * Supports both authenticated OAuth tokens AND public ("Anyone with the link can view") sheets via API key.
  */
 async function fetchGoogleSpreadsheet(
   resource: ResourceInfo,
-  accessToken?: string | null
+  accessToken?: string | null,
+  allowSingleTabFallback = true
 ): Promise<FetchDocResponse> {
   const sheetId = resource.id;
   let apiAuthFailed = false;
   let apiErrorMessage = '';
 
+  // 1. Authenticated Sheets API v4 (reads private and public sheets, all tabs)
   if (accessToken) {
     try {
       const response = await fetch(
@@ -279,78 +367,7 @@ async function fetchGoogleSpreadsheet(
 
       if (response.ok) {
         const data = await response.json();
-        const title = data.properties?.title || 'Craftsquarre Shoot Sheet';
-        const textParts: string[] = [];
-        const links: string[] = [];
-        const tabNames: string[] = [];
-        const sheets = data.sheets || [];
-
-        for (const sheet of sheets) {
-          const tabTitle = sheet.properties?.title || `Sheet ${tabNames.length + 1}`;
-          tabNames.push(tabTitle);
-          textParts.push(`\n=== TAB: ${tabTitle} ===`);
-
-          for (const grid of sheet.data || []) {
-            for (const row of grid.rowData || []) {
-              const rowLabels: string[] = [];
-              const rowUrls: string[] = [];
-
-              for (const cell of row.values || []) {
-                const val = (cell.formattedValue || '').trim();
-                const hyperlink = (cell.hyperlink || '').trim();
-                const formula = (cell.userEnteredValue?.formulaValue || '').trim();
-
-                const cellUrls: string[] = [];
-                if (hyperlink) cellUrls.push(hyperlink);
-
-                if (Array.isArray(cell.textFormatRuns)) {
-                  for (const run of cell.textFormatRuns) {
-                    const uri = run?.format?.link?.uri;
-                    if (uri) cellUrls.push(uri.trim());
-                  }
-                }
-
-                if (formula) {
-                  cellUrls.push(...extractUrlsFromText(formula));
-                }
-
-                if (val) {
-                  cellUrls.push(...extractUrlsFromText(val));
-                }
-
-                const uniqueCellUrls = deduplicateLocalUrls(cellUrls);
-                rowUrls.push(...uniqueCellUrls);
-
-                const cleanLabel = stripUrlsFromText(val);
-                if (cleanLabel) {
-                  rowLabels.push(cleanLabel);
-                }
-              }
-
-              const uniqueRowUrls = deduplicateLocalUrls(rowUrls);
-              links.push(...uniqueRowUrls);
-
-              const parts: string[] = [];
-              if (rowLabels.length > 0) parts.push(rowLabels.join(' | '));
-              if (uniqueRowUrls.length > 0) parts.push(uniqueRowUrls.join(' '));
-
-              if (parts.length > 0) {
-                textParts.push(parts.join(' | '));
-              }
-            }
-          }
-        }
-
-        const fullText = textParts.join('\n');
-        return {
-          title,
-          text: fullText,
-          links: Array.from(new Set(links)),
-          type: 'spreadsheet',
-          tabCount: tabNames.length || 1,
-          tabNames,
-          usedPublicFallback: false,
-        };
+        return parseGoogleSheetsResponse(data);
       } else if (response.status === 401 || response.status === 403) {
         apiAuthFailed = true;
         const errBody = await response.json().catch(() => ({}));
@@ -362,7 +379,23 @@ async function fetchGoogleSpreadsheet(
         console.warn('Google Sheets API returned error:', response.status, errBody);
       }
     } catch (err) {
-      console.warn('Sheets API v4 failed, trying public CSV export:', err);
+      console.warn('Sheets API v4 failed, trying public access:', err);
+    }
+  }
+
+  // 2. Public Multi-Tab Sheets API v4 using project API key (works without sign-in if sheet is shared as "Anyone with the link can view")
+  if (!accessToken && firebaseConfig.apiKey) {
+    try {
+      const publicApiRes = await fetch(
+        `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}?includeGridData=true&key=${encodeURIComponent(firebaseConfig.apiKey)}`,
+        { cache: 'no-store' }
+      );
+      if (publicApiRes.ok) {
+        const data = await publicApiRes.json();
+        return parseGoogleSheetsResponse(data);
+      }
+    } catch (err) {
+      console.warn('Public multi-tab Sheets API attempt failed:', err);
     }
   }
 
@@ -375,39 +408,41 @@ async function fetchGoogleSpreadsheet(
     );
   }
 
-  // Fallback: public CSV export (NOTE: only exports 1 sheet tab)
-  const exportUrls = [
-    `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:csv${resource.gid ? `&gid=${resource.gid}` : ''}`,
-    `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv${resource.gid ? `&gid=${resource.gid}` : ''}`,
-  ];
+  // 3. Fallback: public CSV export (NOTE: only exports 1 sheet tab)
+  if (allowSingleTabFallback) {
+    const exportUrls = [
+      `https://docs.google.com/spreadsheets/d/${sheetId}/gviz/tq?tqx=out:csv${resource.gid ? `&gid=${resource.gid}` : ''}`,
+      `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv${resource.gid ? `&gid=${resource.gid}` : ''}`,
+    ];
 
-  for (const url of exportUrls) {
-    try {
-      const res = await fetch(url, { cache: 'no-store' });
-      if (res.ok) {
-        const csvText = await res.text();
-        if (csvText.trim().startsWith('<!DOCTYPE html') || csvText.includes('accounts.google.com')) {
-          continue;
+    for (const url of exportUrls) {
+      try {
+        const res = await fetch(url, { cache: 'no-store' });
+        if (res.ok) {
+          const csvText = await res.text();
+          if (csvText.trim().startsWith('<!DOCTYPE html') || csvText.includes('accounts.google.com')) {
+            continue;
+          }
+          const urls = extractUrlsFromText(csvText);
+          return {
+            title: 'Craftsquarre Shoot Working Sheet',
+            text: `=== TAB: Active Sheet ===\n${csvText}`,
+            links: urls,
+            type: 'spreadsheet',
+            tabCount: 1,
+            tabNames: ['Active Sheet (Tab 1 only)'],
+            usedPublicFallback: true,
+          };
         }
-        const urls = extractUrlsFromText(csvText);
-        return {
-          title: 'Craftsquarre Shoot Working Sheet',
-          text: `=== TAB: Active Sheet ===\n${csvText}`,
-          links: urls,
-          type: 'spreadsheet',
-          tabCount: 1,
-          tabNames: ['Active Sheet (Tab 1 only)'],
-          usedPublicFallback: true,
-        };
+      } catch {
+        // Ignore CORS error on public fallback
       }
-    } catch {
-      // Ignore CORS error on public fallback
     }
   }
 
   if (!accessToken) {
     throw new AuthRequiredError(
-      'Please sign in with Google to read all tabs and links from your Google Sheet.'
+      'Please sign in with Google (or share the Sheet as "Anyone with the link can view") so all tabs can be read.'
     );
   }
 

@@ -147,35 +147,47 @@ export const GoogleDocSyncModal: React.FC<GoogleDocSyncModalProps> = ({
       onDocumentUrlChange(urlToUse);
 
       let token = explicitToken !== undefined ? explicitToken : await getAccessToken();
+      let docData;
 
-      if (!token) {
+      // For Google Sheets without an active token, try public multi-tab sync first
+      // so crew members on other phones can sync publicly shared sheets without signing in
+      if (!token && info.type === 'spreadsheet') {
         try {
-          const authResult = await googleSignIn();
-          if (authResult) {
-            token = authResult.accessToken;
-            onAuthChange(authResult.user, true);
-          }
-        } catch (signInErr: any) {
-          console.warn('Sign-in dismissed or failed, attempting public fallback:', signInErr);
+          docData = await fetchGoogleDoc(urlToUse, null, { allowSingleTabFallback: false });
+        } catch {
+          // Sheet requires authentication — fall through to Google Sign-In
         }
       }
 
-      let docData;
-      try {
-        docData = await fetchGoogleDoc(urlToUse, token);
-      } catch (err: any) {
-        if (err instanceof AuthRequiredError || (err as any)?.needsAuth) {
-          clearAccessToken();
-          onAuthChange(currentUser, false);
-          // Force consent prompt so Google grants both Docs & Sheets scopes
-          const refreshed = await googleSignIn(true);
-          if (!refreshed) {
+      if (!docData) {
+        if (!token) {
+          try {
+            const authResult = await googleSignIn();
+            if (authResult) {
+              token = authResult.accessToken;
+              onAuthChange(authResult.user, true);
+            }
+          } catch (signInErr: any) {
+            console.warn('Sign-in dismissed or failed, attempting public fallback:', signInErr);
+          }
+        }
+
+        try {
+          docData = await fetchGoogleDoc(urlToUse, token);
+        } catch (err: any) {
+          if (err instanceof AuthRequiredError || (err as any)?.needsAuth) {
+            clearAccessToken();
+            onAuthChange(currentUser, false);
+            // Force consent prompt so Google grants both Docs & Sheets scopes
+            const refreshed = await googleSignIn(true);
+            if (!refreshed) {
+              throw err;
+            }
+            onAuthChange(refreshed.user, true);
+            docData = await fetchGoogleDoc(urlToUse, refreshed.accessToken);
+          } else {
             throw err;
           }
-          onAuthChange(refreshed.user, true);
-          docData = await fetchGoogleDoc(urlToUse, refreshed.accessToken);
-        } else {
-          throw err;
         }
       }
 
@@ -334,7 +346,7 @@ export const GoogleDocSyncModal: React.FC<GoogleDocSyncModalProps> = ({
                   1. Google Account Connection
                 </span>
                 <p className="text-[11px] text-neutral-500">
-                  Required to read all tabs of your Google Docs and Google Sheets
+                  Required for private files &amp; Google Docs. Public Google Sheets (&ldquo;Anyone with the link can view&rdquo;) can sync all tabs without signing in.
                 </p>
               </div>
 

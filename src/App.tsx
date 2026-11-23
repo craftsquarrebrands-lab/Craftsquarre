@@ -28,7 +28,12 @@ import { DirectorDrawer } from './components/DirectorDrawer';
 import { ChecklistView } from './components/ChecklistView';
 import { GoogleDocSyncModal } from './components/GoogleDocSyncModal';
 import { initAuth, getAccessToken, googleSignIn, clearAccessToken } from './services/googleAuth';
-import { fetchGoogleDoc, parseDocumentAndSyncVideos, AuthRequiredError } from './services/googleDocsSync';
+import {
+  fetchGoogleDoc,
+  parseDocumentAndSyncVideos,
+  extractResourceInfo,
+  AuthRequiredError,
+} from './services/googleDocsSync';
 
 const CATEGORIES = [
   { id: 'all', name: 'All Videos', icon: Film },
@@ -188,35 +193,48 @@ export default function App() {
     setIsSyncing(true);
     try {
       let token = await getAccessToken();
+      let docData;
 
-      if (!token) {
+      // For Google Sheets without an active OAuth token, try public multi-tab sync FIRST
+      // so team members on other phones can sync shared ("Anyone with the link") sheets with zero sign-in!
+      const resInfo = extractResourceInfo(documentUrl);
+      if (!token && resInfo?.type === 'spreadsheet') {
         try {
-          const authResult = await googleSignIn();
-          if (authResult) {
-            token = authResult.accessToken;
-            setCurrentUser(authResult.user);
-            setHasValidToken(true);
-          }
-        } catch (signInErr) {
-          console.warn('Google sign-in skipped, trying fallback:', signInErr);
+          docData = await fetchGoogleDoc(documentUrl, null, { allowSingleTabFallback: false });
+        } catch {
+          // Sheet is private or requires OAuth — proceed to Google Sign-In below
         }
       }
 
-      let docData;
-      try {
-        docData = await fetchGoogleDoc(documentUrl, token);
-      } catch (err: any) {
-        if (err instanceof AuthRequiredError || err?.needsAuth) {
-          clearAccessToken();
-          setHasValidToken(false);
-          // Force Google consent screen so both Docs & Sheets scopes are granted
-          const refreshed = await googleSignIn(true);
-          if (!refreshed) throw err;
-          setCurrentUser(refreshed.user);
-          setHasValidToken(true);
-          docData = await fetchGoogleDoc(documentUrl, refreshed.accessToken);
-        } else {
-          throw err;
+      if (!docData) {
+        if (!token) {
+          try {
+            const authResult = await googleSignIn();
+            if (authResult) {
+              token = authResult.accessToken;
+              setCurrentUser(authResult.user);
+              setHasValidToken(true);
+            }
+          } catch (signInErr) {
+            console.warn('Google sign-in skipped, trying fallback:', signInErr);
+          }
+        }
+
+        try {
+          docData = await fetchGoogleDoc(documentUrl, token);
+        } catch (err: any) {
+          if (err instanceof AuthRequiredError || err?.needsAuth) {
+            clearAccessToken();
+            setHasValidToken(false);
+            // Force Google consent screen so both Docs & Sheets scopes are granted
+            const refreshed = await googleSignIn(true);
+            if (!refreshed) throw err;
+            setCurrentUser(refreshed.user);
+            setHasValidToken(true);
+            docData = await fetchGoogleDoc(documentUrl, refreshed.accessToken);
+          } else {
+            throw err;
+          }
         }
       }
 
