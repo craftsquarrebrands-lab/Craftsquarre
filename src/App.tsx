@@ -27,13 +27,24 @@ import { VideoCard, ShotStatus } from './components/VideoCard';
 import { DirectorDrawer } from './components/DirectorDrawer';
 import { ChecklistView } from './components/ChecklistView';
 import { GoogleDocSyncModal } from './components/GoogleDocSyncModal';
-import { initAuth, getAccessToken, googleSignIn, clearAccessToken } from './services/googleAuth';
+import { initAuth, getAccessToken, googleSignIn, clearAccessToken, auth } from './services/googleAuth';
 import {
   fetchGoogleDoc,
   parseDocumentAndSyncVideos,
   extractResourceInfo,
   AuthRequiredError,
 } from './services/googleDocsSync';
+import {
+  subscribeToDeckMeta,
+  subscribeToDeckVideos,
+  subscribeToChecklist,
+  publishDeckToCloud,
+  updateVideoStatusInCloud,
+  updateVideoNoteInCloud,
+  toggleChecklistItemInCloud,
+  resetChecklistInCloud,
+  isDeckAdmin,
+} from './services/firestoreSync';
 
 const CATEGORIES = [
   { id: 'all', name: 'All Videos', icon: Film },
@@ -119,6 +130,8 @@ export default function App() {
 
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [hasValidToken, setHasValidToken] = useState<boolean>(false);
+  const [hasCloudDeck, setHasCloudDeck] = useState<boolean>(false);
+  const [isPublishingCloud, setIsPublishingCloud] = useState<boolean>(false);
   const [isDocSyncModalOpen, setIsDocSyncModalOpen] = useState<boolean>(false);
   const [isChecklistModalOpen, setIsChecklistModalOpen] = useState<boolean>(false);
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
@@ -127,7 +140,7 @@ export default function App() {
   // Modal / Drawer States
   const [activeDrawerVideo, setActiveDrawerVideo] = useState<VideoReference | null>(null);
 
-  // Initialize Firebase Auth listener (strictly tracks live in-memory token availability)
+  // Initialize Firebase Auth listener (tracks both persisted Firebase user and live in-memory OAuth token)
   useEffect(() => {
     const unsubscribe = initAuth(
       (user) => {
@@ -136,9 +149,46 @@ export default function App() {
       },
       () => {
         setHasValidToken(false);
+      },
+      (user) => {
+        setCurrentUser(user);
       }
     );
     return () => unsubscribe();
+  }, []);
+
+  // Real-time Firestore subscriptions (runs on EVERY device with ZERO sign-in required)
+  useEffect(() => {
+    const unsubMeta = subscribeToDeckMeta((meta) => {
+      if (!meta) {
+        setHasCloudDeck(false);
+        return;
+      }
+      setHasCloudDeck(true);
+      if (meta.title) setDocTitle(meta.title);
+      if (meta.documentUrl) setDocumentUrl(meta.documentUrl);
+      if (meta.updatedAt) setLastSyncedAt(meta.updatedAt);
+    });
+
+    const unsubVideos = subscribeToDeckVideos((snapshot) => {
+      if (snapshot.videos.length > 0) {
+        setVideosList(snapshot.videos);
+        setStatuses(snapshot.statuses);
+        setNotes(snapshot.notes);
+      }
+    });
+
+    const unsubChecklist = subscribeToChecklist((cloudChecked) => {
+      if (Object.keys(cloudChecked).length > 0) {
+        setCheckedList(cloudChecked);
+      }
+    });
+
+    return () => {
+      unsubMeta();
+      unsubVideos();
+      unsubChecklist();
+    };
   }, []);
 
   // Save state to LocalStorage
@@ -244,6 +294,7 @@ export default function App() {
       // Always persist syncedVideos so backfilled sourceTab tags appear immediately
       setVideosList(syncedVideos);
       setLastSyncedAt(new Date());
+      const resolvedTitle = docData.title || docTitle;
       if (docData.title) setDocTitle(docData.title);
 
       if (docData.usedPublicFallback) {
@@ -256,6 +307,25 @@ export default function App() {
         return;
       }
 
+      // If signed in as owner/admin, broadcast the updated deck live to all phones via Firestore
+      let publishedCount = 0;
+      if (isDeckAdmin(auth.currentUser)) {
+        try {
+          setIsPublishingCloud(true);
+          publishedCount = await publishDeckToCloud({
+            videos: syncedVideos,
+            statuses,
+            notes,
+            title: resolvedTitle,
+            documentUrl,
+          });
+        } catch (cloudErr) {
+          console.warn('Cloud broadcast failed:', cloudErr);
+        } finally {
+          setIsPublishingCloud(false);
+        }
+      }
+
       const tabLabel = `${docData.tabCount} ${docData.tabCount === 1 ? 'tab' : 'tabs'}`;
       const tabPreview =
         tabSummaries.length > 1
@@ -265,6 +335,7 @@ export default function App() {
         duplicateInDocCount > 0
           ? ` (${duplicateInDocCount} duplicate link${duplicateInDocCount > 1 ? 's' : ''} merged)`
           : '';
+      const cloudNote = publishedCount > 0 ? ' · Live on all phones' : '';
 
       if (newCount > 0) {
         setSelectedSection('all');
@@ -274,13 +345,13 @@ export default function App() {
         setSearchQuery('');
         window.scrollTo({ top: 0, behavior: 'smooth' });
         showToast(
-          `Updated from "${docData.title}" (${tabLabel}): Added ${newCount} new video${newCount > 1 ? 's' : ''} (${totalDetected} unique links${dupNote})${tabPreview}.`,
+          `Updated from "${docData.title}" (${tabLabel}): Added ${newCount} new video${newCount > 1 ? 's' : ''} (${totalDetected} unique links${dupNote})${tabPreview}${cloudNote}.`,
           'success',
           8000
         );
       } else {
         showToast(
-          `Synced "${docData.title}" (${tabLabel}): ${totalDetected} unique videos${dupNote}${tabPreview} — all up to date.`,
+          `Synced "${docData.title}" (${tabLabel}): ${totalDetected} unique videos${dupNote}${tabPreview}${cloudNote} — all up to date.`,
           'info',
           7000
         );
@@ -296,7 +367,7 @@ export default function App() {
     } finally {
       setIsSyncing(false);
     }
-  }, [documentUrl, videosList, showToast]);
+  }, [documentUrl, docTitle, videosList, statuses, notes, showToast]);
 
   // Background Auto-Sync every 30 seconds (only runs when user has a live Google token)
   useEffect(() => {
@@ -314,8 +385,17 @@ export default function App() {
 
         if (newCount > 0) {
           setVideosList(syncedVideos);
+          if (isDeckAdmin(auth.currentUser)) {
+            await publishDeckToCloud({
+              videos: syncedVideos,
+              statuses,
+              notes,
+              title: docData.title || docTitle,
+              documentUrl,
+            }).catch((e) => console.warn('Background cloud publish skipped:', e));
+          }
           showToast(
-            `Auto-sync: Added ${newCount} new reference video${newCount > 1 ? 's' : ''} at the top!`,
+            `Auto-sync: Added ${newCount} new reference video${newCount > 1 ? 's' : ''} live on all phones!`,
             'success'
           );
         }
@@ -333,12 +413,53 @@ export default function App() {
     }, 30000);
 
     return () => clearInterval(interval);
-  }, [autoSyncEnabled, documentUrl, hasValidToken, videosList, showToast]);
+  }, [autoSyncEnabled, documentUrl, docTitle, hasValidToken, videosList, statuses, notes, showToast]);
 
-  const handleVideosUpdated = (updated: VideoReference[], newCount: number, title?: string) => {
+  const handlePublishDeckToCloud = useCallback(
+    async (overrideVideos?: VideoReference[], overrideTitle?: string, overrideUrl?: string) => {
+      if (!isDeckAdmin(auth.currentUser)) return 0;
+      setIsPublishingCloud(true);
+      try {
+        const count = await publishDeckToCloud({
+          videos: overrideVideos ?? videosList,
+          statuses,
+          notes,
+          title: overrideTitle ?? docTitle,
+          documentUrl: overrideUrl ?? documentUrl,
+        });
+        return count;
+      } catch (err) {
+        console.warn('Failed to publish deck to cloud:', err);
+        showToast('Could not publish to shared cloud database. Please try again.', 'error');
+        return 0;
+      } finally {
+        setIsPublishingCloud(false);
+      }
+    },
+    [videosList, statuses, notes, docTitle, documentUrl, showToast]
+  );
+
+  const handleVideosUpdated = (
+    updated: VideoReference[],
+    newCount: number,
+    title?: string,
+    sourceUrl?: string
+  ) => {
     setVideosList(updated);
     setLastSyncedAt(new Date());
+    const resolvedTitle = title || docTitle;
+    const resolvedUrl = sourceUrl ?? documentUrl;
     if (title) setDocTitle(title);
+
+    // Broadcast live to all crew devices if signed in as owner/admin
+    if (isDeckAdmin(auth.currentUser)) {
+      handlePublishDeckToCloud(updated, resolvedTitle, resolvedUrl).then((published) => {
+        if (published > 0 && newCount === 0) {
+          showToast(`Published ${published} videos live to all devices.`, 'success');
+        }
+      });
+    }
+
     if (newCount > 0) {
       setSelectedSection('all');
       setSelectedSourceTab('all');
@@ -346,7 +467,9 @@ export default function App() {
       setShowOnlyNew(false);
       setSearchQuery('');
       showToast(
-        `Added ${newCount} new reference video${newCount > 1 ? 's' : ''} to the top of your deck!`,
+        isDeckAdmin(auth.currentUser)
+          ? `Added ${newCount} new reference video${newCount > 1 ? 's' : ''} — publishing live to all phones!`
+          : `Added ${newCount} new reference video${newCount > 1 ? 's' : ''} to the top of your deck!`,
         'success'
       );
     }
@@ -354,19 +477,40 @@ export default function App() {
 
   const handleStatusChange = (id: string, status: ShotStatus) => {
     setStatuses((prev) => ({ ...prev, [id]: status }));
+    if (isDeckAdmin(auth.currentUser)) {
+      updateVideoStatusInCloud(id, status).catch((err) => {
+        console.warn('Cloud status update failed:', err);
+      });
+    }
   };
 
   const handleSaveNote = (id: string, note: string) => {
     setNotes((prev) => ({ ...prev, [id]: note }));
+    if (isDeckAdmin(auth.currentUser)) {
+      updateVideoNoteInCloud(id, note).catch((err) => {
+        console.warn('Cloud note update failed:', err);
+      });
+    }
   };
 
   const handleToggleChecklist = (key: string) => {
-    setCheckedList((prev) => ({ ...prev, [key]: !prev[key] }));
+    const nextValue = !checkedList[key];
+    setCheckedList((prev) => ({ ...prev, [key]: nextValue }));
+    if (isDeckAdmin(auth.currentUser)) {
+      toggleChecklistItemInCloud(key, nextValue).catch((err) => {
+        console.warn('Cloud checklist update failed:', err);
+      });
+    }
   };
 
   const handleResetChecklist = () => {
     if (window.confirm('Reset all checklist items to unchecked?')) {
       setCheckedList({});
+      if (isDeckAdmin(auth.currentUser)) {
+        resetChecklistInCloud().catch((err) => {
+          console.warn('Cloud checklist reset failed:', err);
+        });
+      }
     }
   };
 
@@ -450,8 +594,8 @@ export default function App() {
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
         onOpenDocSync={() => setIsDocSyncModalOpen(true)}
-        isDocSynced={!!documentUrl && hasValidToken}
-        isSyncing={isSyncing}
+        isDocSynced={hasCloudDeck || (!!documentUrl && hasValidToken)}
+        isSyncing={isSyncing || isPublishingCloud}
         onQuickSync={handleInstantSync}
         lastSyncedAt={lastSyncedAt}
         docTitle={docTitle}
@@ -753,6 +897,15 @@ export default function App() {
         onAutoSyncToggle={setAutoSyncEnabled}
         currentVideos={videosList}
         onVideosUpdated={handleVideosUpdated}
+        hasCloudDeck={hasCloudDeck}
+        isPublishingCloud={isPublishingCloud}
+        onPublishToCloud={async () => {
+          const count = await handlePublishDeckToCloud();
+          if (count > 0) {
+            showToast(`Published ${count} videos live to all phones!`, 'success');
+          }
+          return count;
+        }}
       />
 
       {/* Optional Shoot Checklist Modal */}

@@ -1,0 +1,304 @@
+{
+  "entities": {
+    "Deck": {
+      "title": "Shoot Reference Deck",
+      "description": "Shared shoot reference deck metadata synced from Google Docs or Google Sheets by the owner.",
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "description": "Display title of the synced Google Doc or Sheet"
+        },
+        "documentUrl": {
+          "type": "string",
+          "maxLength": 1000,
+          "description": "Source Google Doc or Sheet URL"
+        },
+        "videoCount": {
+          "type": "number",
+          "description": "Total number of videos in the deck"
+        },
+        "tabNames": {
+          "type": "array",
+          "description": "List of synced Google Doc or Sheet tab names (max 50)"
+        },
+        "isPublic": {
+          "type": "boolean",
+          "description": "Whether the shoot deck is viewable by crew with the app link"
+        },
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "UID of the admin who owns this deck"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server last-updated timestamp"
+        }
+      },
+      "required": [
+        "title",
+        "documentUrl",
+        "videoCount",
+        "tabNames",
+        "isPublic",
+        "ownerId",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "DeckVideo": {
+      "title": "Deck Reference Video",
+      "description": "An individual video reference synced into a shared shoot deck, along with its shot status and note.",
+      "type": "object",
+      "properties": {
+        "deckId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Parent deck ID"
+        },
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "UID of the admin who synced this video"
+        },
+        "orderIndex": {
+          "type": "number",
+          "description": "Display ordering index in the gallery"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300,
+          "description": "Title of the reference video"
+        },
+        "section": {
+          "type": "string",
+          "enum": [
+            "pre-launch",
+            "launch",
+            "scripted-ads",
+            "ugc-bags",
+            "ugc-shoes",
+            "ugc-slippers",
+            "ugc-drinks",
+            "ugc-food",
+            "ugc-asmr",
+            "ugc-fashion"
+          ],
+          "description": "Product section slug"
+        },
+        "sectionName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "description": "Human-readable section name"
+        },
+        "categoryTag": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "Category display tag"
+        },
+        "url": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000,
+          "description": "Original source video URL"
+        },
+        "platform": {
+          "type": "string",
+          "enum": [
+            "instagram",
+            "tiktok",
+            "twitter",
+            "youtube",
+            "facebook",
+            "pinterest",
+            "drive",
+            "vimeo",
+            "other"
+          ],
+          "description": "Video hosting platform"
+        },
+        "embedId": {
+          "type": "string",
+          "maxLength": 300,
+          "description": "Platform embed identifier"
+        },
+        "durationEst": {
+          "type": "string",
+          "maxLength": 40,
+          "description": "Estimated clip duration"
+        },
+        "hook": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "Optional short label or hook"
+        },
+        "sourceTab": {
+          "type": "string",
+          "maxLength": 150,
+          "description": "Source Google Doc or Sheet tab name"
+        },
+        "isNewlySynced": {
+          "type": "boolean",
+          "description": "Marks links added in the latest sync"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "todo",
+            "shooting",
+            "wrapped"
+          ],
+          "description": "Current shot completion status"
+        },
+        "note": {
+          "type": "string",
+          "maxLength": 2000,
+          "description": "Quick production note for this reference"
+        },
+        "isPublic": {
+          "type": "boolean",
+          "description": "Whether this video is viewable by crew with the app link"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server last-updated timestamp"
+        }
+      },
+      "required": [
+        "deckId",
+        "ownerId",
+        "orderIndex",
+        "title",
+        "section",
+        "sectionName",
+        "categoryTag",
+        "url",
+        "platform",
+        "embedId",
+        "durationEst",
+        "hook",
+        "sourceTab",
+        "isNewlySynced",
+        "status",
+        "note",
+        "isPublic",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ChecklistState": {
+      "title": "Checklist Item State",
+      "description": "Tracks checked state for shoot preparation checklist items.",
+      "type": "object",
+      "properties": {
+        "deckId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Parent deck ID"
+        },
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "UID of the admin who updated this checklist item"
+        },
+        "checked": {
+          "type": "boolean",
+          "description": "Whether this preparation item is checked off"
+        },
+        "isPublic": {
+          "type": "boolean",
+          "description": "Whether this checklist state is viewable by crew with the app link"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server last-updated timestamp"
+        }
+      },
+      "required": [
+        "deckId",
+        "ownerId",
+        "checked",
+        "isPublic",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "AdminRecord": {
+      "title": "Admin Record",
+      "description": "Authorized admin users allowed to publish synced deck updates.",
+      "type": "object",
+      "properties": {
+        "role": {
+          "type": "string",
+          "enum": [
+            "admin"
+          ],
+          "description": "Admin role marker"
+        }
+      },
+      "required": [
+        "role"
+      ]
+    }
+  },
+  "firestore": {
+    "/decks/{deckId}": {
+      "schema": {
+        "$ref": "#/entities/Deck"
+      },
+      "description": "Shared shoot reference deck metadata documents (primary document: /decks/main)"
+    },
+    "/decks/{deckId}/videos/{videoId}": {
+      "schema": {
+        "$ref": "#/entities/DeckVideo"
+      },
+      "description": "Synced reference videos belonging to a shoot deck"
+    },
+    "/decks/{deckId}/checklist/{itemId}": {
+      "schema": {
+        "$ref": "#/entities/ChecklistState"
+      },
+      "description": "Shoot preparation checklist completion flags for a deck"
+    },
+    "/admins/{userId}": {
+      "schema": {
+        "$ref": "#/entities/AdminRecord"
+      },
+      "description": "Admin allowlist records"
+    }
+  }
+}

@@ -1,0 +1,232 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Global hardened primitives
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isAdmin() {
+      return isVerifiedUser() && (
+        request.auth.token.email == 'craftsquarrebrands@gmail.com' ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    // Entity validation helpers (Anti-Update-Gap)
+    function isValidDeck(data) {
+      return data.keys().hasAll([
+          'title', 'documentUrl', 'videoCount', 'tabNames',
+          'isPublic', 'ownerId', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'title', 'documentUrl', 'videoCount', 'tabNames',
+          'isPublic', 'ownerId', 'createdAt', 'updatedAt'
+        ])
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 200
+        && data.documentUrl is string && data.documentUrl.size() <= 1000
+        && data.videoCount is number && data.videoCount >= 0 && data.videoCount <= 5000
+        && data.tabNames is list && data.tabNames.size() <= 50
+        && (data.tabNames.size() == 0 || (data.tabNames[0] is string && data.tabNames[0].size() <= 150))
+        && data.isPublic is bool
+        && isValidId(data.ownerId)
+        && data.ownerId == request.auth.uid
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidSection(section) {
+      return section in [
+        'pre-launch', 'launch', 'scripted-ads',
+        'ugc-bags', 'ugc-shoes', 'ugc-slippers',
+        'ugc-drinks', 'ugc-food', 'ugc-asmr', 'ugc-fashion'
+      ];
+    }
+
+    function isValidPlatform(platform) {
+      return platform in [
+        'instagram', 'tiktok', 'twitter', 'youtube',
+        'facebook', 'pinterest', 'drive', 'vimeo', 'other'
+      ];
+    }
+
+    function isValidShotStatus(status) {
+      return status in ['todo', 'shooting', 'wrapped'];
+    }
+
+    function isValidDeckVideo(data, deckId) {
+      return data.keys().hasAll([
+          'deckId', 'ownerId', 'orderIndex', 'title', 'section', 'sectionName',
+          'categoryTag', 'url', 'platform', 'embedId', 'durationEst', 'hook',
+          'sourceTab', 'isNewlySynced', 'status', 'note', 'isPublic',
+          'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'deckId', 'ownerId', 'orderIndex', 'title', 'section', 'sectionName',
+          'categoryTag', 'url', 'platform', 'embedId', 'durationEst', 'hook',
+          'sourceTab', 'isNewlySynced', 'status', 'note', 'isPublic',
+          'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.deckId) && data.deckId == deckId
+        && isValidId(data.ownerId) && data.ownerId == request.auth.uid
+        && data.orderIndex is number && data.orderIndex >= 0 && data.orderIndex <= 5000
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 300
+        && data.section is string && data.section.size() <= 40 && isValidSection(data.section)
+        && data.sectionName is string && data.sectionName.size() >= 1 && data.sectionName.size() <= 100
+        && data.categoryTag is string && data.categoryTag.size() >= 1 && data.categoryTag.size() <= 120
+        && data.url is string && data.url.size() >= 1 && data.url.size() <= 1000
+        && data.platform is string && data.platform.size() <= 30 && isValidPlatform(data.platform)
+        && data.embedId is string && data.embedId.size() <= 300
+        && data.durationEst is string && data.durationEst.size() <= 40
+        && data.hook is string && data.hook.size() <= 500
+        && data.sourceTab is string && data.sourceTab.size() <= 150
+        && data.isNewlySynced is bool
+        && data.status is string && data.status.size() <= 20 && isValidShotStatus(data.status)
+        && data.note is string && data.note.size() <= 2000
+        && data.isPublic is bool
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidChecklistItem(data, deckId) {
+      return data.keys().hasAll([
+          'deckId', 'ownerId', 'checked', 'isPublic', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'deckId', 'ownerId', 'checked', 'isPublic', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.deckId) && data.deckId == deckId
+        && isValidId(data.ownerId) && data.ownerId == request.auth.uid
+        && data.checked is bool
+        && data.isPublic is bool
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // Collection: /admins/{userId}
+    match /admins/{userId} {
+      allow get: if isVerifiedUser() && isValidId(userId) && (request.auth.uid == userId || isAdmin());
+      allow list: if false;
+      allow create, update, delete: if false;
+    }
+
+    // Collection: /decks/{deckId}
+    match /decks/{deckId} {
+      allow get: if isValidId(deckId) && (resource == null || existing().isPublic == true || isAdmin());
+      allow list: if resource.data.isPublic == true;
+
+      allow create: if isAdmin()
+        && isValidId(deckId)
+        && isValidDeck(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isAdmin()
+        && isValidId(deckId)
+        && isValidDeck(incoming())
+        && incoming().ownerId == existing().ownerId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'title', 'documentUrl', 'videoCount', 'tabNames', 'isPublic', 'updatedAt'
+        ]);
+
+      allow delete: if isAdmin() && isValidId(deckId);
+
+      // Subcollection: /decks/{deckId}/videos/{videoId}
+      match /videos/{videoId} {
+        allow get: if isValidId(deckId) && isValidId(videoId)
+          && (resource == null || existing().isPublic == true || isAdmin())
+          && exists(/databases/$(database)/documents/decks/$(deckId));
+
+        allow list: if isValidId(deckId) && resource.data.isPublic == true && resource.data.deckId == deckId;
+
+        allow create: if isAdmin()
+          && isValidId(deckId)
+          && isValidId(videoId)
+          && isValidDeckVideo(incoming(), deckId)
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && existsAfter(/databases/$(database)/documents/decks/$(deckId));
+
+        allow update: if isAdmin()
+          && isValidId(deckId)
+          && isValidId(videoId)
+          && isValidDeckVideo(incoming(), deckId)
+          && incoming().deckId == existing().deckId
+          && incoming().ownerId == existing().ownerId
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && exists(/databases/$(database)/documents/decks/$(deckId))
+          && (
+            // Action 1: Update shot status
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']) ||
+            // Action 2: Update shoot note
+            incoming().diff(existing()).affectedKeys().hasOnly(['note', 'updatedAt']) ||
+            // Action 3: Sync refresh of video metadata from Google Sheet/Doc
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'orderIndex', 'title', 'section', 'sectionName', 'categoryTag',
+              'url', 'platform', 'embedId', 'durationEst', 'hook',
+              'sourceTab', 'isNewlySynced', 'isPublic', 'status', 'note', 'updatedAt'
+            ])
+          );
+
+        allow delete: if isAdmin() && isValidId(deckId) && isValidId(videoId)
+          && exists(/databases/$(database)/documents/decks/$(deckId));
+      }
+
+      // Subcollection: /decks/{deckId}/checklist/{itemId}
+      match /checklist/{itemId} {
+        allow get: if isValidId(deckId) && isValidId(itemId)
+          && (resource == null || existing().isPublic == true || isAdmin())
+          && exists(/databases/$(database)/documents/decks/$(deckId));
+
+        allow list: if isValidId(deckId) && resource.data.isPublic == true && resource.data.deckId == deckId;
+
+        allow create: if isAdmin()
+          && isValidId(deckId)
+          && isValidId(itemId)
+          && isValidChecklistItem(incoming(), deckId)
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && existsAfter(/databases/$(database)/documents/decks/$(deckId));
+
+        allow update: if isAdmin()
+          && isValidId(deckId)
+          && isValidId(itemId)
+          && isValidChecklistItem(incoming(), deckId)
+          && incoming().deckId == existing().deckId
+          && incoming().ownerId == existing().ownerId
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && exists(/databases/$(database)/documents/decks/$(deckId))
+          && incoming().diff(existing()).affectedKeys().hasOnly(['checked', 'isPublic', 'updatedAt']);
+
+        allow delete: if isAdmin() && isValidId(deckId) && isValidId(itemId)
+          && exists(/databases/$(database)/documents/decks/$(deckId));
+      }
+    }
+  }
+}

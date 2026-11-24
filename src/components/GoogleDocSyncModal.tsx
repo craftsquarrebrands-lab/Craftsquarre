@@ -14,6 +14,7 @@ import {
   Copy,
   Layers,
   AlertTriangle,
+  Cloud,
 } from 'lucide-react';
 import { User } from 'firebase/auth';
 import {
@@ -31,6 +32,7 @@ import {
   DuplicateLinkInfo,
   TabScanSummary,
 } from '../services/googleDocsSync';
+import { isDeckAdmin } from '../services/firestoreSync';
 import { VideoReference } from '../data/shootData';
 
 interface GoogleDocSyncModalProps {
@@ -46,7 +48,10 @@ interface GoogleDocSyncModalProps {
   autoSyncEnabled: boolean;
   onAutoSyncToggle: (enabled: boolean) => void;
   currentVideos: VideoReference[];
-  onVideosUpdated: (updated: VideoReference[], newCount: number, title?: string) => void;
+  onVideosUpdated: (updated: VideoReference[], newCount: number, title?: string, sourceUrl?: string) => void;
+  hasCloudDeck?: boolean;
+  isPublishingCloud?: boolean;
+  onPublishToCloud?: () => Promise<number>;
 }
 
 export const GoogleDocSyncModal: React.FC<GoogleDocSyncModalProps> = ({
@@ -63,7 +68,11 @@ export const GoogleDocSyncModal: React.FC<GoogleDocSyncModalProps> = ({
   onAutoSyncToggle,
   currentVideos,
   onVideosUpdated,
+  hasCloudDeck = false,
+  isPublishingCloud = false,
+  onPublishToCloud,
 }) => {
+  const isOwnerAdmin = isDeckAdmin(currentUser);
   const [inputUrl, setInputUrl] = useState(documentUrl);
   const [isSyncing, setIsSyncing] = useState(false);
   const [isSigningIn, setIsSigningIn] = useState(false);
@@ -199,7 +208,7 @@ export const GoogleDocSyncModal: React.FC<GoogleDocSyncModalProps> = ({
         replaceExisting: useReplaceExisting,
       });
 
-      onVideosUpdated(parsed.syncedVideos, parsed.newCount, docData.title);
+      onVideosUpdated(parsed.syncedVideos, parsed.newCount, docData.title, urlToUse);
       setDuplicateDetails(parsed.duplicateDetails);
       setTabSummaries(parsed.tabSummaries);
       setUsedPublicFallback(docData.usedPublicFallback);
@@ -338,6 +347,51 @@ export const GoogleDocSyncModal: React.FC<GoogleDocSyncModalProps> = ({
 
         {/* Modal Body */}
         <div className="p-6 overflow-y-auto space-y-6 flex-1">
+          {/* Shared Cloud Deck Live Broadcast Panel */}
+          <div className="p-4 rounded-xl bg-neutral-950 border border-neutral-800 space-y-2.5">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-start gap-2.5">
+                <div className={`p-2 rounded-lg shrink-0 ${hasCloudDeck ? 'bg-emerald-500/15 text-emerald-400' : 'bg-amber-500/15 text-amber-400'}`}>
+                  <Cloud className="w-4 h-4" />
+                </div>
+                <div className="space-y-0.5">
+                  <span className="text-xs font-bold text-neutral-100 block">
+                    {hasCloudDeck
+                      ? 'Shared Cloud Deck is Live on All Devices'
+                      : 'Shared Cloud Deck Ready'}
+                  </span>
+                  <p className="text-[11px] text-neutral-400 leading-relaxed">
+                    {isOwnerAdmin
+                      ? 'Every sync, shot checkmark, and note you save is broadcast automatically to every phone with this link — no sign-in needed for your team.'
+                      : hasCloudDeck
+                      ? 'You are viewing the live shared deck. Whenever the owner syncs new links, your screen updates automatically — no Google sign-in required.'
+                      : 'Once the owner signs in and clicks Sync Now, all videos and tabs will appear automatically on every phone with no sign-in required.'}
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {isOwnerAdmin && onPublishToCloud && (
+              <button
+                onClick={async () => {
+                  const count = await onPublishToCloud();
+                  if (count > 0) {
+                    setSyncStatusMsg(`Published all ${count} videos live to every phone with the link.`);
+                  }
+                }}
+                disabled={isPublishingCloud || isSyncing}
+                className="w-full py-2 px-3 bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 font-semibold rounded-lg text-xs flex items-center justify-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
+              >
+                <Cloud className="w-3.5 h-3.5" />
+                <span>
+                  {isPublishingCloud
+                    ? 'Publishing to all phones...'
+                    : `Publish Current ${currentVideos.length} Videos to All Phones`}
+                </span>
+              </button>
+            )}
+          </div>
+
           {/* User Auth Section */}
           <div className="bg-neutral-950 p-4 rounded-xl border border-neutral-800 space-y-3">
             <div className="flex items-center justify-between">

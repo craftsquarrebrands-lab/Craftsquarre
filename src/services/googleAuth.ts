@@ -9,7 +9,7 @@ import {
 } from 'firebase/auth';
 import firebaseConfig from '../../firebase-applet-config.json';
 
-const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
+export const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
 export const auth = getAuth(app);
 
 export const SCOPES = [
@@ -34,9 +34,11 @@ let isSigningIn = false;
 
 export const initAuth = (
   onAuthSuccess?: (user: User, token: string) => void,
-  onAuthFailure?: () => void
+  onAuthFailure?: () => void,
+  onUserChanged?: (user: User | null) => void
 ) => {
   return onAuthStateChanged(auth, (user: User | null) => {
+    if (onUserChanged) onUserChanged(user);
     if (user) {
       if (cachedAccessToken) {
         if (onAuthSuccess) onAuthSuccess(user, cachedAccessToken);
